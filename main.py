@@ -18,6 +18,7 @@ UUID_FIELD_SIZE = 36
 
 
 class BHeader(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("opcode", ctypes.c_uint16),
         ("size", ctypes.c_uint32)
@@ -28,6 +29,7 @@ HEADER_SIZE = ctypes.sizeof(BHeader)
 
 
 class BAuth(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("uuid", ctypes.c_char * 36)
     ]
@@ -37,6 +39,7 @@ AUTH_SIZE = ctypes.sizeof(BAuth)
 
 
 class BCallTo(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("touuid", ctypes.c_char * 36)
     ]
@@ -46,6 +49,7 @@ CALLTO_SIZE = ctypes.sizeof(BCallTo)
 
 
 class BCallResponse(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("peer_uuid", ctypes.c_char * 36),
         ("peer_ip", ctypes.c_char * 21),
@@ -56,6 +60,7 @@ CALL_RESPONSE_SIZE = ctypes.sizeof(BCallResponse)
 
 
 class BIncomingCall(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("call_from", ctypes.c_char * 36),
         ("peer_ip", ctypes.c_char * 21),
@@ -71,6 +76,33 @@ class OPCODES(enum.IntEnum):
     CALL = 3,
     INCOMING_CALL = 4,
     CALL_RESPONSE = 5
+
+class UDPConnector(Process):
+    def __init__(self, user_uuid, in_q, out_q):
+        super().__init__()
+        self.user_uuid = user_uuid
+        self.in_q = in_q
+
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        header = BHeader()
+        header.opcode = 1  # UDP_AUTH
+        header.size = ctypes.sizeof(BAuth)
+
+        auth = BAuth()
+        auth.uuid = str(self.user_uuid).encode().ljust(36, b"\0")
+
+        packet = bytes(header) + bytes(auth)
+
+        sock.sendto(packet, ("127.0.0.1", 1111))
+
+        print("UDP registered")
+
+        while True:
+            data, addr = sock.recvfrom(4096)
+            print("UDP:", data)
+
 
 
 class NetworkProcess(Process):
@@ -90,7 +122,7 @@ class NetworkProcess(Process):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(("127.0.0.1", 5555))
         auth = BAuth()
-        auth.uuid = str(self.user_uuid).encode().ljust(32, b"\0")
+        auth.uuid = str(self.user_uuid).encode().ljust(36, b"\0")
         h = BHeader()
         h.opcode = OPCODES.AUTH
         h.size = AUTH_SIZE
@@ -105,7 +137,7 @@ class NetworkProcess(Process):
                     self.send_call(sock, cmd["target"])
 
             try:
-                data = sock.recv(4096)
+                data = sock.recv(4096) #6
                 if data:
                     self.buffer.extend(data)
                     self.parse()
@@ -126,10 +158,12 @@ class NetworkProcess(Process):
         match opcode:
             case OPCODES.CALL_RESPONSE:
                 print({"type": "call_response", "peer": str(payload.peer_uuid), "ip":str(payload.peer_ip)})
-                self.out_q.put({"type": "call_response", "peer": str(payload.peer_uuid), "ip":str(payload.peer_ip)})
+                # self.out_q.put({"type": "call_response", "peer": str(payload.peer_uuid), "ip":str(payload.peer_ip)})
+                self.out_q.put({"type": "call_response"})
             case OPCODES.INCOMING_CALL:
                 print({"type": "incoming_call", "peer": str(payload.call_from), "ip": str(payload.peer_ip)})
-                self.out_q.put({"type": "incoming_call", "peer": str(payload.call_from), "ip": str(payload.peer_ip)})
+                # self.out_q.put({"type": "incoming_call", "peer": str(payload.call_from), "ip": str(payload.peer_ip)})
+                self.out_q.put({"type": "incoming_call"})
             case _:
                 print("could not find")
 
@@ -199,7 +233,11 @@ if __name__ == "__main__":
     net = NetworkProcess(args.uuid, in_q, out_q)
     net.start()
 
+    udp_client = UDPConnector(args.uuid, in_q, out_q)
+    udp_client.start()
+
     cli = MainProcess(in_q, out_q)
     cli.run()
 
     net.join()
+    udp_client.join()
